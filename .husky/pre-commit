@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Block commits that contain secret patterns before they reach the remote.
+# False positives can be suppressed via .gitleaksignore.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks detect --no-git --redact --verbose
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "gitleaks detected potential secrets. Commit blocked."
+    echo "If this is a false positive, add it to .gitleaksignore."
+    exit 1
+  fi
+else
+  echo "gitleaks not found; skipping secret scan. Install gitleaks to enable pre-commit secret scanning."
+fi

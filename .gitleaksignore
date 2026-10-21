@@ -2,5 +2,4 @@
 # Format: <commit_hash>:<file_path>:<line_number>
 # This file allows suppressing specific findings that are false positives
 
-# Example (uncomment if needed):
-# abc123def456:src/config/example.ts:42
+# No active suppressions. Add entries here only for verified false positives.
