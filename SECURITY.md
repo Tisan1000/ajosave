@@ -84,3 +84,9 @@ Vulnerabilities in Ajosave's direct dependencies should be reported here as well
 ### Questions
 
 Questions about this policy, the severity of a finding, or the disclosure timeline can be sent to security@stellar.app. We are happy to work with you on a coordinated schedule.
+
+## Payment Threat Model
+
+The formal threat model for the NGN → USDC payment flow — covering NGN → Paystack, webhook processing, NGN → USDC conversion, USDC → Soroban contract, and payout from contract, plus partial contributions, early-exit refunds, and KYC bypass attempts — is maintained in [`docs/payment-threat-model.md`](docs/payment-threat-model.md).
+
+That document contains the STRIDE analysis, per-threat likelihood/impact ratings, and the mapping of each threat to an existing mitigation or an open tracking issue. It is reviewed by at least one external security reviewer and should be read alongside this policy when assessing payment-related reports.

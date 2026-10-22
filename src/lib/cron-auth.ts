@@ -1,79 +1,92 @@
+import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
-import { serverConfig } from "@/server/config";
-
-const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes — replay window
 
 /**
- * Compute HMAC-SHA256 signature for an internal request.
- * Signature covers: "<timestamp>.<METHOD>.<path>"
+ * Cron request signing (HMAC-SHA256).
+ *
+ * Callers must send:
+ *   x-cron-timestamp: <unix seconds>
+ *   x-cron-signature: HMAC-SHA256(secret, `${timestamp}${method}${path}`) as hex
+ *
+ * Two-key rotation: set CRON_SECRET (current) and optionally CRON_SECRET_PREVIOUS
+ * (previous). Both are accepted during the rotation window so keys can be
+ * rotated without downtime.
  */
-export function computeSignature(secret: string, timestamp: string, method: string, path: string): string {
+
+const MAX_SKEW_SECONDS = 5 * 60;
+
+function getSecrets(): string[] {
+  const secrets = [process.env.CRON_SECRET, process.env.CRON_SECRET_PREVIOUS].filter(
+    (s): s is string => typeof s === "string" && s.length > 0
+  );
+  return secrets;
+}
+
+function sign(secret: string, timestamp: string, method: string, path: string): string {
   return createHmac("sha256", secret)
-    .update(`${timestamp}.${method.toUpperCase()}.${path}`)
+    .update(`${timestamp}${method}${path}`)
     .digest("hex");
 }
 
-/**
- * Build headers for a signed internal request.
- *
- * Usage (e.g. cron caller):
- *   const headers = signRequest("GET", "/api/v1/cron/cycle");
- *   await fetch(url, { headers });
- */
-export function signRequest(method: string, path: string): Record<string, string> {
-  const secret = serverConfig.cronSecret;
-  if (!secret) throw new Error("CRON_SECRET is not configured");
-  const timestamp = Date.now().toString();
-  const signature = computeSignature(secret, timestamp, method, path);
-  return { "x-signature": signature, "x-timestamp": timestamp };
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
 
 /**
- * Verify HMAC-SHA256 signature on an incoming internal request.
- * Accepts any object with { method, url, headers.get() } — compatible with NextRequest.
- *
- * Returns null on success, or an error string on failure.
+ * Verifies a signed cron request. Returns a NextResponse on failure, or null
+ * when the request is authentic.
  */
-export function verifySignature(req: {
-  method: string;
-  url: string;
-  headers: { get(name: string): string | null };
-}): string | null {
-  const secret = serverConfig.cronSecret;
-  if (!secret) return "CRON_SECRET not configured";
-
-  const timestamp = req.headers.get("x-timestamp");
-  const signature = req.headers.get("x-signature");
-  if (!timestamp || !signature) return "missing headers";
-
-  const age = Math.abs(Date.now() - parseInt(timestamp, 10));
-  if (isNaN(age) || age > TIMESTAMP_TOLERANCE_MS) return "timestamp out of range";
-
-  const { pathname } = new URL(req.url);
-  const expected = computeSignature(secret, timestamp, req.method, pathname);
-
-  const expectedBuf = Buffer.from(expected, "hex");
-  const actualBuf = Buffer.from(signature.padEnd(64, "0").slice(0, 64), "hex");
-  if (expectedBuf.length !== actualBuf.length || !timingSafeEqual(expectedBuf, actualBuf)) {
-    return "signature mismatch";
+export async function verifyCronSecret(req: NextRequest): Promise<NextResponse | null> {
+  const secrets = getSecrets();
+  if (secrets.length === 0) {
+    return NextResponse.json(
+      { success: false, error: "Cron authentication is not configured" },
+      { status: 500 }
+    );
   }
 
-  return null;
-}
+  const timestamp = req.headers.get("x-cron-timestamp");
+  const signature = req.headers.get("x-cron-signature");
 
-// ── Next.js wrapper ────────────────────────────────────────────────────────────
-// Imported lazily so the pure functions above are testable without next/server.
-
-/**
- * Verify HMAC signature on a NextRequest. Returns a 401 NextResponse on failure,
- * or null on success. Drop-in replacement for the old Bearer-token verifyCronSecret.
- */
-export async function verifyCronSecret(req: import("next/server").NextRequest): Promise<import("next/server").NextResponse | null> {
-  const { NextResponse } = await import("next/server");
-  const err = verifySignature(req);
-  if (err) {
-    console.error("[cron-auth] rejected:", err);
-    return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+  if (!timestamp || !signature) {
+    return NextResponse.json(
+      { success: false, error: "Missing cron signature headers" },
+      { status: 401 }
+    );
   }
+
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) {
+    return NextResponse.json(
+      { success: false, error: "Invalid cron timestamp" },
+      { status: 401 }
+    );
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - ts) > MAX_SKEW_SECONDS) {
+    return NextResponse.json(
+      { success: false, error: "Cron timestamp expired" },
+      { status: 401 }
+    );
+  }
+
+  const method = req.method.toUpperCase();
+  const path = req.nextUrl.pathname;
+
+  const valid = secrets.some((secret) =>
+    safeEqual(sign(secret, timestamp, method, path), signature)
+  );
+
+  if (!valid) {
+    return NextResponse.json(
+      { success: false, error: "Invalid cron signature" },
+      { status: 401 }
+    );
+  }
+
   return null;
 }
