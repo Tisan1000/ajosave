@@ -1,0 +1,44 @@
+name: SRI Audit
+
+# Resolves issue #298 — Subresource Integrity enforcement
+# Scans all source files for external asset references missing integrity= attributes.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  sri-audit:
+    name: SRI Audit — External Asset Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run SRI audit
+        run: node scripts/sri-audit.js
+
+      - name: Verify local Swagger assets present
+        run: |
+          echo "Checking local Swagger asset copies exist..."
+          if [ ! -f public/swagger/swagger-ui.css ]; then
+            echo "ERROR: public/swagger/swagger-ui.css missing — run scripts to download local copy"
+            exit 1
+          fi
+          if [ ! -f public/swagger/swagger-ui-bundle.js ]; then
+            echo "ERROR: public/swagger/swagger-ui-bundle.js missing — run scripts to download local copy"
+            exit 1
+          fi
+          echo "✅ Local Swagger assets present."
